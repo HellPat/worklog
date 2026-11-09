@@ -1,0 +1,10 @@
+/target/
+/mutants.out*/
+/*.sqlite*
+/scripts/ui-driver
+/evidence/*.png
+
+/tools/node_modules/
+/evidence/agent-desktop-state/
+/evidence/**/*.sqlite*
+/evidence/**/*.png

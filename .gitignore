@@ -1,0 +1,9 @@
+/target/
+.DS_Store
+*.sock
+**/target/
+**/node_modules/
+**/mutants.out*/
+*.sqlite*
+/spikes/gpui-recorder/evidence/
+/spikes/gpui-recorder/scripts/ui-driver
