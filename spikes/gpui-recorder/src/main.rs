@@ -412,12 +412,6 @@ impl Recorder {
                 }
             }))
             .child(self.page_navigation(cx))
-            .child(self.timeline(cx))
-            .child(
-                div()
-                    .text_xs()
-                    .child("Me: blue · Them: yellow · Both: lime · 15-minute ticks"),
-            )
             .child(
                 div()
                     .id("span-page-title")
@@ -426,6 +420,12 @@ impl Recorder {
                     .text_lg()
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Refine span"),
+            )
+            .child(self.timeline(cx))
+            .child(
+                div()
+                    .text_xs()
+                    .child("Me: blue · Them: yellow · Both: lime · 15-minute ticks"),
             )
             .child(
                 div()
@@ -461,7 +461,8 @@ impl Recorder {
             .child(
                 Button::new("page-back")
                     .ghost()
-                    .label("← Back")
+                    .label("Back")
+                    .icon(IconName::ArrowLeft)
                     .accessibility_label("Back")
                     .on_click(cx.listener(|this, _, _, cx| {
                         if this.settings {
@@ -523,6 +524,8 @@ impl Recorder {
             .child(
                 Button::new("footer-record")
                     .large()
+                    .flex_1()
+                    .h(px(48.))
                     .icon(Icon::new(AppIcon::Mic).text_color(rgb(0xe66b72)))
                     .label(if self.recording {
                         "Stop recording"
@@ -548,6 +551,9 @@ impl Recorder {
         if self.settings {
             return bar.child(
                 Button::new("settings-done")
+                    .large()
+                    .flex_1()
+                    .h(px(48.))
                     .primary()
                     .label("Done")
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -559,6 +565,8 @@ impl Recorder {
         bar = bar.child(
             Button::new("footer-start")
                 .large()
+                .flex_1()
+                .h(px(48.))
                 .icon(Icon::new(AppIcon::ScanLine).text_color(rgb(0x548ed0)))
                 .accessibility_label(if self.start_page {
                     "Start span"
@@ -606,6 +614,9 @@ impl Recorder {
         if self.start_page {
             bar.child(
                 Button::new("start-blank")
+                    .large()
+                    .flex_1()
+                    .h(px(48.))
                     .primary()
                     .label("Start without details")
                     .on_click(cx.listener(|this, _, _, cx| this.begin_span(true, cx))),
@@ -614,6 +625,8 @@ impl Recorder {
             bar.child(
                 Button::new("save")
                     .large()
+                    .flex_1()
+                    .h(px(48.))
                     .icon(Icon::new(AppIcon::Tag).text_color(rgb(0xe6a63b)))
                     .primary()
                     .label("Save span")
@@ -624,6 +637,8 @@ impl Recorder {
             bar.child(
                 Button::new("footer-label")
                     .large()
+                    .flex_1()
+                    .h(px(48.))
                     .icon(Icon::new(AppIcon::Tag).text_color(rgb(0xe6a63b)))
                     .label("Label span")
                     .accessibility_label("◇ Label span")
@@ -655,7 +670,12 @@ impl Recorder {
             .child(self.page_navigation(cx));
         if self.settings {
             page = page
-                .child("Settings · simulation only")
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Settings"),
+                )
                 .child(
                     Button::new("engine")
                         .label(format!(
@@ -707,10 +727,9 @@ impl Recorder {
     fn annotation_editor(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w_full()
-            .p_4()
-            .border_1()
-            .border_color(rgb(0xb9c7d0))
-            .rounded_lg()
+            .pt_3()
+            .border_t_1()
+            .border_color(rgb(0xe7e9ec))
             .bg(rgb(0xffffff))
             .v_flex()
             .gap_2()
@@ -824,7 +843,7 @@ impl Render for Recorder {
                 .p_3()
                 .rounded_lg()
                 .border_1()
-                .border_color(if marked { rgb(0xcbd9e5) } else { rgb(0xeeeeF0) })
+                .border_color(if marked { rgb(0xb9cfe2) } else { rgb(0xeeeeF0) })
                 .bg(if marked {
                     rgb(0xedf2f6)
                 } else if u.speaker == "Me" {
@@ -956,7 +975,7 @@ impl Render for Recorder {
                                 div()
                                     .text_lg()
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Recorder"),
+                                    .child("Worklog"),
                             )
                             .child(
                                 div()
@@ -987,7 +1006,7 @@ impl Render for Recorder {
                     .rounded_lg()
                     .border_1()
                     .border_color(rgb(0xe7e7eb))
-                    .bg(rgb(0xfafbfc))
+                    .bg(rgb(0xf8fafb))
                     .child(
                         div()
                             .h_flex()
@@ -1043,7 +1062,7 @@ impl Render for Recorder {
                         div()
                             .text_xs()
                             .text_color(rgb(0x71717a))
-                            .child("15-minute ticks · Drag to mark a span; pull an edge to adjust"),
+                            .child("Drag to mark a span · Pull either edge to refine"),
                     )
                     .child(
                         div()
@@ -1165,7 +1184,7 @@ fn main() -> anyhow::Result<()> {
                     size(px(700.), px(830.)),
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Team-up GPUI spike — sample data".into()),
+                    title: Some("Worklog — sample data".into()),
                     ..Default::default()
                 }),
                 ..Default::default()

@@ -126,7 +126,7 @@ impl Desktop {
             "--app",
             APP,
             "--window",
-            "Team-up GPUI spike",
+            "Worklog — sample data",
             "--timeout",
             "10000",
         ])?;
