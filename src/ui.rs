@@ -214,8 +214,13 @@ impl Panel {
             return;
         }
         if !self.test_mode {
-            if self.runtime.is_none() && self.settings.model == audio::ModelChoice::Nemotron {
-                match Runtime::start() {
+            if self.settings.model != audio::ModelChoice::Whisper
+                && self
+                    .runtime
+                    .as_ref()
+                    .is_none_or(|runtime| runtime.model != self.settings.model)
+            {
+                match Runtime::start_with_model(self.settings.model) {
                     Ok(runtime) => self.runtime = Some(runtime),
                     Err(error) => {
                         self.status = error.to_string();
@@ -374,6 +379,8 @@ impl Panel {
                     self.status = error;
                 }
                 AudioEvent::Ready => self.status.clear(),
+                AudioEvent::SourceReady { .. } => {}
+                AudioEvent::Partial { .. } => {}
             }
         }
         if self.flush_pending.as_ref().is_some_and(|(_, waiting)| {
@@ -782,8 +789,11 @@ impl Panel {
             );
             ui.horizontal(|ui| {
                 ui.label("Model");
-                let models = [audio::ModelChoice::Nemotron, audio::ModelChoice::Whisper];
-                let mut selected = usize::from(self.settings.model == audio::ModelChoice::Whisper);
+                let models = audio::ModelChoice::ALL;
+                let mut selected = models
+                    .iter()
+                    .position(|model| *model == self.settings.model)
+                    .unwrap_or(0);
                 let labels: Vec<_> = models.iter().map(|model| model.label()).collect();
                 if ui
                     .add(

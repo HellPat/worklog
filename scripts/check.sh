@@ -9,7 +9,7 @@ cargo fmt --all --check
 cargo fmt --manifest-path spikes/gpui-recorder/Cargo.toml --all --check
 cargo build --locked --release --manifest-path spikes/gpui-recorder/Cargo.toml
 cargo test --locked --all-targets
-cargo test --locked --manifest-path spikes/gpui-recorder/Cargo.toml --test core
+cargo test --locked --release --manifest-path spikes/gpui-recorder/Cargo.toml --lib --test core --test reader --test cli
 if test "${WORKLOG_DESKTOP_TESTS:-0}" = 1; then
   ./scripts/test-desktop.sh
 fi

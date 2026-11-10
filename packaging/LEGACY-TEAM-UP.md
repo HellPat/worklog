@@ -25,6 +25,7 @@ Preferences: `~/Library/Application Support/team-up/tray-settings.json`. One pro
 This build uses the already-installed local dependencies on this Mac:
 
 - Nemotron 3.5 Streaming Q8_0 through the installed NeMo-Speech 0.3.0 executable, with an automatically managed loopback-only streaming server.
+- Parakeet TDT 0.6B v3 Q8_0 through NeMo-Speech 0.3.0, using the local complete-audio endpoint for bounded chunks.
 - Whisper large-v3-turbo Q5_0 through `/opt/homebrew/bin/whisper-cli`, finalizing bounded chunks. Temporary inference WAVs are removed afterward.
 - `/opt/homebrew/bin/codex` for chat metadata, optional creation and read-back verification. Message delivery uses the running desktop application's local owner/follower coordination socket. Team-up never resumes, forks or takes over the selected chat, starts a private agent for sending, or removes writer locks. The existing desktop owner handles the message and its approvals. If no owner is available, nothing is sent and the transcript remains ready for retry. **Open in Codex** is an explicit navigation action, never an automatic delivery fallback.
 

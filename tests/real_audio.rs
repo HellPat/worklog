@@ -26,13 +26,16 @@ fn real_streaming_audio_reaches_app_and_survives_restart() -> Result<()> {
     let runtime = Runtime::start()?;
     let (tx, rx) = mpsc::channel();
     stream_wav(runtime.port, Path::new("fixtures/asr/spoken.wav"), tx)?;
+    let mut partial_seen = false;
     for event in rx.try_iter() {
         match event {
             AudioEvent::Transcript(segment) => app.ingest(segment),
             AudioEvent::Error(error) => anyhow::bail!(error),
-            AudioEvent::Ready | AudioEvent::Flushed { .. } => {}
+            AudioEvent::Partial { .. } => partial_seen = true,
+            AudioEvent::Ready | AudioEvent::SourceReady { .. } | AudioEvent::Flushed { .. } => {}
         }
     }
+    ensure!(partial_seen, "Real streaming ASR did not emit draft text");
     ensure!(
         !app.journal.model.segments.is_empty(),
         "Real ASR returned no finalized speech"
@@ -86,7 +89,10 @@ fn actual_output_device_streams_to_model_and_retains_audio_only_when_enabled() -
         match rx.recv_timeout(Duration::from_secs(100))? {
             AudioEvent::Ready => break,
             AudioEvent::Error(error) => anyhow::bail!(error),
-            AudioEvent::Transcript(_) | AudioEvent::Flushed { .. } => {}
+            AudioEvent::Transcript(_)
+            | AudioEvent::SourceReady { .. }
+            | AudioEvent::Flushed { .. }
+            | AudioEvent::Partial { .. } => {}
         }
     }
     let result = Command::new("/opt/homebrew/bin/ffplay")
@@ -215,5 +221,45 @@ fn whisper_streams_real_audio_without_retaining_audio() -> Result<()> {
         "Audio was retained despite default-off setting"
     );
     println!("Whisper transcript: {text}");
+    Ok(())
+}
+
+#[test]
+#[ignore = "loads the installed local Parakeet model and streams fixture audio without hardware"]
+fn parakeet_streams_fixture_audio_and_persists_transcript() -> Result<()> {
+    use team_up::audio::{ModelChoice, stream_wav_with_model};
+    let dir = tempfile::tempdir()?;
+    let runtime = Runtime::start_with_model(ModelChoice::Parakeet)?;
+    let (tx, rx) = mpsc::channel();
+    stream_wav_with_model(
+        runtime.port,
+        Path::new("fixtures/asr/spoken.wav"),
+        ModelChoice::Parakeet,
+        tx,
+    )?;
+    let mut journal = Journal::open(dir.path())?;
+    let mut final_text = String::new();
+    for event in rx.try_iter() {
+        match event {
+            AudioEvent::Transcript(segment) => {
+                final_text.push_str(&segment.text);
+                journal.append(team_up::model::Event::Transcript { segment })?;
+            }
+            AudioEvent::Error(error) => anyhow::bail!(error),
+            _ => {}
+        }
+    }
+    ensure!(
+        final_text.to_lowercase().contains("meeting"),
+        "Parakeet fixture did not recognize meeting: {final_text}"
+    );
+    println!("Parakeet fixture transcript: {final_text}");
+    let count = journal.model.segments.len();
+    ensure!(count > 0, "No finalized Parakeet utterances");
+    drop(journal);
+    ensure!(
+        Journal::open(dir.path())?.model.segments.len() == count,
+        "Parakeet transcript did not survive restart"
+    );
     Ok(())
 }

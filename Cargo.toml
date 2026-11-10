@@ -18,6 +18,7 @@ uuid = { version = "=1.22.0", features = ["v4", "serde"] }
 tungstenite = "=0.28.0"
 hound = "=3.5.1"
 tempfile = "=3.26.0"
+sonora = "=0.3.0"
 
 [dev-dependencies]
 egui_system_font_provider = "=0.37.0"

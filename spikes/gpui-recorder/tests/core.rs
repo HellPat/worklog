@@ -293,3 +293,404 @@ fn pre_sqldef_spike_schema_upgrades_without_losing_messages() -> Result<()> {
     Store::open(&path)?;
     Ok(())
 }
+
+#[test]
+fn editing_a_saved_span_updates_instead_of_duplicating_it() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("edit.sqlite");
+    let mut store = Store::open(&path)?;
+    store.seed()?;
+    let original = Note {
+        span: Span {
+            from: parse_local("14:30:00.000")?,
+            to: parse_local("14:32:00.000")?,
+        },
+        label: "Planning".into(),
+        body: "Original".into(),
+    };
+    store.save(&original)?;
+    for label in ["", " \t", "Untitled span", " Untitles Span "] {
+        let invalid = Note {
+            label: label.into(),
+            ..original.clone()
+        };
+        assert!(store.save(&invalid).is_err());
+        assert!(store.update_note(&original, &invalid).is_err());
+        assert_eq!(store.notes()?, vec![original.clone()]);
+    }
+    let edited = Note {
+        span: Span {
+            from: parse_local("14:32:00.000")?,
+            to: parse_local("14:34:00.000")?,
+        },
+        label: "Revised".into(),
+        body: "Keep detail".into(),
+    };
+    store.update_note(&original, &edited)?;
+    assert_eq!(store.notes()?, vec![edited]);
+    let db = rusqlite::Connection::open(path)?;
+    let links: i64 = db.query_row("SELECT count(*) FROM span_messages", [], |r| r.get(0))?;
+    assert_eq!(links, 2);
+    Ok(())
+}
+
+#[test]
+fn captured_transcript_is_idempotent_persistent_and_links_existing_spans() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("captured.sqlite");
+    let store = Store::open(&path)?;
+    let start =
+        chrono::DateTime::parse_from_rfc3339("2026-11-10T12:00:00Z")?.with_timezone(&chrono::Utc);
+    let segment = team_up_gpui_spike::model::Segment {
+        id: uuid::Uuid::new_v4(),
+        source: "microphone".into(),
+        start,
+        end: start + chrono::Duration::seconds(3),
+        text: "A real captured utterance".into(),
+    };
+    store.save(&Note {
+        span: Span {
+            from: start.timestamp_millis(),
+            to: segment.end.timestamp_millis(),
+        },
+        label: "Decision".into(),
+        body: String::new(),
+    })?;
+    assert!(store.ingest_segment(&segment)?.is_some());
+    assert!(store.ingest_segment(&segment)?.is_none());
+    drop(store);
+    let store = Store::open(&path)?;
+    assert_eq!(store.utterances()?.len(), 1);
+    assert_eq!(store.utterances()?[0].text, segment.text);
+    assert_eq!(
+        store.recorded_activity()?,
+        vec![(
+            Span {
+                from: start.timestamp_millis(),
+                to: segment.end.timestamp_millis()
+            },
+            1
+        )]
+    );
+    let db = rusqlite::Connection::open(path)?;
+    let links: i64 = db.query_row("SELECT count(*) FROM span_messages", [], |r| r.get(0))?;
+    assert_eq!(links, 1);
+    Ok(())
+}
+#[test]
+fn real_source_activity_preserves_true_overlaps_and_silence() {
+    use team_up_gpui_spike::combine_activity;
+    assert_eq!(
+        combine_activity(&[
+            (Span { from: 0, to: 10 }, 1),
+            (Span { from: 5, to: 15 }, 2),
+            (Span { from: 20, to: 25 }, 1)
+        ]),
+        vec![
+            (Span { from: 0, to: 5 }, 1),
+            (Span { from: 5, to: 10 }, 3),
+            (Span { from: 10, to: 15 }, 2),
+            (Span { from: 20, to: 25 }, 1)
+        ]
+    );
+    assert_eq!(
+        combine_activity(&[(Span { from: 0, to: 10 }, 1), (Span { from: 5, to: 15 }, 1)]),
+        vec![(Span { from: 0, to: 15 }, 1)]
+    );
+}
+
+#[test]
+fn timeline_notes_and_breakpoints_are_independent_and_survive_restart() -> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("notes.sqlite");
+    let mut store = Store::open(&path)?;
+    store.seed()?;
+    let messages = store.utterances()?;
+    let last = messages
+        .last()
+        .ok_or_else(|| anyhow::anyhow!("Missing fixture"))?;
+    let time = last.time + 1;
+    assert!(store.add_timeline_entry(time, "  ", false).is_err());
+    store.add_timeline_entry(time, " A useful note ", false)?;
+    store.add_timeline_entry(time + 1, "", true)?;
+    store.add_timeline_entry(time + 2, "Next topic", true)?;
+    // A standalone note on a later day cannot accidentally attach to yesterday.
+    store.add_timeline_entry(time + 86_400_000, "New day", false)?;
+    assert!(store.notes()?.is_empty());
+    drop(store);
+    let store = Store::open(&path)?;
+    let entries = store.timeline_entries()?;
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0].body, "A useful note");
+    assert_eq!(entries[0].utterance_id, Some(last.id));
+    assert!(!entries[0].breakpoint);
+    assert!(entries[1].breakpoint);
+    assert!(entries[1].body.is_empty());
+    assert_eq!(entries[2].body, "Next topic");
+    assert_eq!(entries[3].utterance_id, None);
+    assert_eq!(store.utterances()?.len(), messages.len());
+    Ok(())
+}
+
+#[test]
+fn day_minimap_advances_without_speech_and_handles_dst() -> Result<()> {
+    use team_up_gpui_spike::{day_time_span, time_at_timeline_y, timeline_y_at};
+    let now = chrono::DateTime::parse_from_rfc3339("2026-11-10T12:34:56+01:00")?.timestamp_millis();
+    let day =
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 10).ok_or_else(|| anyhow::anyhow!("Date"))?;
+    let live = day_time_span(day, now);
+    assert_eq!(live.to, now);
+    assert_eq!(day_time_span(day, now + 1000).to, now + 1000);
+    assert_eq!(day_time_span(day, now + 1000).from, live.from);
+    for (date, hours) in [("2026-03-29", 23), ("2026-10-25", 25), ("2026-11-09", 24)] {
+        let date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")?;
+        let span = day_time_span(date, now);
+        assert_eq!(span.to - span.from, hours * 3_600_000);
+    }
+    let span = Span { from: 0, to: 1000 };
+    let anchors = [(200, 20.), (500, 80.), (900, 160.)];
+    assert_eq!(time_at_timeline_y(&anchors, 50., 0., 200., span), 350);
+    assert_eq!(timeline_y_at(&anchors, 350), Some(50.));
+    assert_eq!(span.at(0.25), 250);
+    Ok(())
+}
+
+#[test]
+fn connected_breakpoints_keep_comments_and_labels_independent() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("ranges.sqlite");
+    let store = Store::open(&path)?;
+    let time =
+        chrono::DateTime::parse_from_rfc3339("2026-10-14T10:15:00+02:00")?.timestamp_millis();
+    let a = store.add_timeline_entry(time, "", true)?;
+    let b = store.add_timeline_entry(time + 900_000, "", true)?;
+    let comment = store.add_timeline_entry(time + 100_000, "Historical note", false)?;
+    let note = Note {
+        span: Span {
+            from: time,
+            to: time + 900_000,
+        },
+        label: "Research".into(),
+        body: String::new(),
+    };
+    store.save_connected_span(&note, b, a)?;
+    assert_eq!(store.timeline_entries()?.len(), 3);
+    store.update_breakpoint_label(a, " Beginning ")?;
+    assert!(store.update_breakpoint_label(comment, "Invalid").is_err());
+    drop(store);
+    let store = Store::open(&path)?;
+    assert_eq!(store.notes()?.len(), 1);
+    assert_eq!(store.timeline_entries()?.len(), 3);
+    assert_eq!(store.timeline_entries()?[0].label, "Beginning");
+    let refined = Note {
+        span: Span {
+            from: time,
+            to: time + 1_200_000,
+        },
+        ..note.clone()
+    };
+    store.update_note(&note, &refined)?;
+    assert_eq!(
+        store
+            .timeline_entries()?
+            .iter()
+            .find(|entry| entry.id == b)
+            .map(|entry| entry.time),
+        Some(time + 1_200_000)
+    );
+    store.remove_range(&refined)?;
+    assert!(store.notes()?.is_empty());
+    assert_eq!(store.timeline_entries()?.len(), 3);
+    assert_eq!(
+        store
+            .timeline_entries()?
+            .iter()
+            .find(|entry| entry.id == comment)
+            .map(|entry| entry.body.as_str()),
+        Some("Historical note")
+    );
+    Ok(())
+}
+
+#[test]
+fn legacy_spans_become_linked_breakpoints_without_losing_data() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("legacy-ranges.sqlite");
+    let old = include_str!("../schema.sql")
+        .split("CREATE TABLE span_breakpoints")
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Schema"))?
+        .replace("    \"label\" TEXT NOT NULL DEFAULT '',\n", "");
+    let db = rusqlite::Connection::open(&path)?;
+    db.execute_batch(&old)?;
+    db.execute(
+        "INSERT INTO notes(start,end,label,body) VALUES(100,200,'Existing range','Keep me')",
+        [],
+    )?;
+    drop(db);
+    for _ in 0..2 {
+        let store = Store::open(&path)?;
+        assert_eq!(store.notes()?.len(), 1);
+        assert_eq!(store.notes()?[0].body, "Keep me");
+        assert_eq!(store.timeline_entries()?.len(), 2);
+        assert!(
+            store
+                .timeline_entries()?
+                .iter()
+                .all(|entry| entry.breakpoint && entry.label.is_empty())
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn range_gesture_distinguishes_clicks_and_marks_both_directions() {
+    let mut click = RangeGesture::new(100, 20.);
+    assert_eq!(click.update(500, 23.), None);
+    assert!(!click.is_marking());
+    assert_eq!(click.update(500, 24.), Some(Span { from: 100, to: 500 }));
+    assert!(click.is_marking());
+    assert_eq!(click.update(50, 19.), Some(Span { from: 50, to: 100 }));
+}
+
+#[test]
+fn native_activity_survives_restart_without_truncation_or_day_leakage() -> Result<()> {
+    use activity::{ActivityPayload, CaptureMessage, parse_message};
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("activity.sqlite");
+    let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+    let start = day_time_span(day, 0).from;
+    let end = day_time_span(day.succ_opt().unwrap(), 0).from;
+    assert_eq!(end - start, 25 * 3_600_000);
+    let raw = serde_json::json!({"type":"activity", "event_id":"native-1", "time":end-1,
+        "application":"Browser", "action":"accessibility", "url":"https://example.org/path?q=full#fragment",
+        "metadata":{"AXValue":"long text ".repeat(10000),"AXSelectedText":"all selected text", "unavailable":{"code":-25204}},
+        "future_os_field":{"values":[1,true,null,"unfiltered"]}});
+    let CaptureMessage::Activity(event) = parse_message(&raw.to_string())? else {
+        panic!("expected activity")
+    };
+    let store = Store::open(&path)?;
+    assert!(store.ingest_activity(event.clone())?.is_some());
+    assert!(store.ingest_activity(event.clone())?.is_none());
+    store.ingest_activity(ActivityPayload {
+        event_id: "earlier".into(),
+        time: start,
+        ..event.clone()
+    })?;
+    store.ingest_activity(ActivityPayload {
+        event_id: "next-day".into(),
+        time: end,
+        ..event.clone()
+    })?;
+    drop(store);
+    let store = Store::open(&path)?;
+    let entries = store.activity_for_day(day)?;
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].event.time, start);
+    assert_eq!(*entries[1].event, event);
+    assert_eq!(
+        serde_json::to_value(entries[1].event.as_ref())?["future_os_field"],
+        raw["future_os_field"]
+    );
+    assert_eq!(store.activity_for_day(day.succ_opt().unwrap())?.len(), 1);
+    assert!(store.activity_for_day(day.pred_opt().unwrap())?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn streaming_speech_keeps_its_position_around_breakpoints_when_finalized() -> Result<()> {
+    let earlier = Utterance {
+        id: 1,
+        time: 100,
+        speaker: "Them".into(),
+        text: "Earlier speech".into(),
+    };
+    let me = LiveUtterance {
+        source: "microphone".into(),
+        time: 200,
+        text: "In progress".into(),
+    };
+    let them = LiveUtterance {
+        source: "system audio".into(),
+        time: 400,
+        text: "Other speaker".into(),
+    };
+    let drafts = vec![them.clone(), me.clone()];
+    let before = ordered_transcript_bubbles(&[earlier.clone()], &drafts);
+    assert_eq!(
+        before
+            .iter()
+            .map(|row| (row.time, row.speaker.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(100, "Them"), (200, "Me"), (400, "Them")]
+    );
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("breakpoint.sqlite");
+    let store = Store::open(&path)?;
+    store.add_timeline_entry(300, "", true)?;
+    store.add_timeline_entry(500, "Note after both speakers", false)?;
+    let annotations = store.timeline_entries()?;
+    let relative_positions = |rows: &[TranscriptBubble]| {
+        annotations
+            .iter()
+            .map(|entry| rows.partition_point(|row| row.time < entry.time))
+            .collect::<Vec<_>>()
+    };
+    // Finals may arrive in reverse order across the two capture streams.
+    let them_final = Utterance {
+        id: 2,
+        time: them.time,
+        speaker: "Them".into(),
+        text: "Other speaker completed".into(),
+    };
+    let during = ordered_transcript_bubbles(
+        &[earlier.clone(), them_final.clone()],
+        std::slice::from_ref(&me),
+    );
+    assert_eq!(relative_positions(&before), relative_positions(&during));
+    let me_final = Utterance {
+        id: 3,
+        time: me.time,
+        speaker: "Me".into(),
+        text: "In progress, now completed".into(),
+    };
+    let after = ordered_transcript_bubbles(&[them_final, me_final, earlier], &[]);
+    assert_eq!(relative_positions(&before), relative_positions(&after));
+    assert_eq!(
+        after.iter().map(|row| row.time).collect::<Vec<_>>(),
+        vec![100, 200, 400]
+    );
+    assert!(after.iter().all(|row| row.utterance_id.is_some()));
+    drop(store);
+    let saved = Store::open(&path)?.timeline_entries()?;
+    assert_eq!(saved[0].time, 300);
+    assert_eq!(saved[1].time, 500);
+    Ok(())
+}
+
+#[test]
+fn live_delta_growth_does_not_reorder_timeline_rows() {
+    let mut drafts = vec![
+        LiveUtterance {
+            source: "microphone".into(),
+            time: 200,
+            text: "A few words".into(),
+        },
+        LiveUtterance {
+            source: "system audio".into(),
+            time: 200,
+            text: "Simultaneous speech".into(),
+        },
+    ];
+    let before = ordered_transcript_bubbles(&[], &drafts)
+        .into_iter()
+        .map(|row| (row.time, row.source))
+        .collect::<Vec<_>>();
+    drafts[0].text.push_str(&" and more words".repeat(50));
+    drafts.reverse();
+    let after = ordered_transcript_bubbles(&[], &drafts)
+        .into_iter()
+        .map(|row| (row.time, row.source))
+        .collect::<Vec<_>>();
+    assert_eq!(before, after);
+}

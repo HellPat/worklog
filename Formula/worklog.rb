@@ -22,8 +22,9 @@ class Worklog < Formula
   def caveats
     <<~EOS
       Run `worklog` to open the native prototype.
-      Recording in this GPUI build is simulated. Models and the older live-capture
-      runtime are not included. Data: ~/Library/Application Support/worklog/.
+      Use `worklog timeline --today` for headless GCF output and `worklog --help` for
+      cursor/streaming commands. Speech models and the local capture runtime
+      are installed separately. Data: ~/Library/Application Support/worklog/.
     EOS
   end
 
